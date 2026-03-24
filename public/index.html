@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Formulaire</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="form-container">
+    <form id="user-form" method="post" novalidate>
+        <label for="nom">Nom :</label>
+        <input id="nom" type="text" name="nom" required>
+
+        <label for="prenoms">Prénoms :</label>
+        <input id="prenoms" type="text" name="prenoms" required>
+
+        <label for="sexe">Sexe :</label>
+        <select id="sexe" name="sexe" required>
+            <option value="">--Choisir--</option>
+            <option value="M">Masculin</option>
+            <option value="F">Féminin</option>
+        </select>
+
+        <label for="telephone">Téléphone :</label>
+        <input id="telephone" type="tel" name="telephone" pattern="[0-9]{10}" required>
+
+        <div class="buttons">
+            <button id="submit-btn" type="submit">Valider</button>
+            <button id="reset-btn" type="reset">Annuler</button>
+        </div>
+
+        <div id="form-spinner" class="form-spinner" aria-hidden="true"></div>
+        <div id="form-message" class="form-message" aria-live="polite"></div>
+    </form>
+</div>
+
+<script>
+    const form = document.getElementById('user-form');
+    const messageBox = document.getElementById('form-message');
+    const spinner = document.getElementById('form-spinner');
+    const submitBtn = document.getElementById('submit-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    function showMessage(text, type) {
+        messageBox.textContent = text;
+        messageBox.className = 'form-message ' + type;
+        messageBox.classList.remove('fade-out');
+        void messageBox.offsetWidth;
+        messageBox.classList.add('fade-in');
+
+        setTimeout(() => {
+            messageBox.classList.remove('fade-in');
+            messageBox.classList.add('fade-out');
+        }, 2800);
+    }
+
+    function setLoading(loading) {
+        if (loading) {
+            spinner.classList.add('visible');
+            submitBtn.disabled = true;
+            resetBtn.disabled = true;
+            form.querySelectorAll('input, select').forEach(el => el.disabled = true);
+        } else {
+            spinner.classList.remove('visible');
+            submitBtn.disabled = false;
+            resetBtn.disabled = false;
+            form.querySelectorAll('input, select').forEach(el => el.disabled = false);
+        }
+    }
+
+    form.addEventListener('submit', async function(event) {
+        event.preventDefault();
+
+        const data = {
+            nom: form.nom.value.trim(),
+            prenoms: form.prenoms.value.trim(),
+            sexe: form.sexe.value,
+            telephone: form.telephone.value.trim(),
+        };
+
+        if (!data.nom || !data.prenoms || !data.sexe || !data.telephone) {
+            showMessage('Tous les champs sont obligatoires.', 'error');
+            return;
+        }
+
+        if (!/^[0-9]{10}$/.test(data.telephone)) {
+            showMessage('Le numéro de téléphone doit contenir exactement 10 chiffres.', 'error');
+            return;
+        }
+
+        try {
+            setLoading(true);
+            showMessage('Envoi en cours...', 'success');
+
+            await new Promise(resolve => setTimeout(resolve, 1000)); // délai visible pour UX
+
+            const response = await fetch('/api/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+
+            if (!response.ok) {
+                const err = await response.text();
+                throw new Error(err || 'Erreur serveur');
+            }
+
+            setLoading(false);
+            showMessage('✔ Formulaire envoyé avec succès !', 'success');
+            form.reset();
+        } catch (error) {
+            setLoading(false);
+            showMessage('Erreur envoi: ' + error.message, 'error');
+        }
+    });
+</script>
+
+</body>
+</html>

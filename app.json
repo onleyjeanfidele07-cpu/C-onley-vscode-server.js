@@ -1,0 +1,22 @@
+{
+  "name": "formulaire-app",
+  "description": "Formulaire moderne avec validation",
+  "repository": "https://github.com/your-username/formulaire-app",
+  "keywords": ["nodejs", "express", "sqlite"],
+  "addons": [],
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ],
+  "env": {
+    "NODE_ENV": {
+      "description": "Node environment",
+      "value": "production"
+    },
+    "CORS_ORIGIN": {
+      "description": "CORS origin for requests",
+      "value": "https://your-domain.com"
+    }
+  }
+}
