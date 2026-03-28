@@ -12,6 +12,7 @@ body {
     border-radius: 10px;
     background-color: #fff;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+    animation: slideIn 0.6s ease-out;
 }
 
 h2 {
@@ -131,4 +132,15 @@ button:disabled {
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateY(-50px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
 }

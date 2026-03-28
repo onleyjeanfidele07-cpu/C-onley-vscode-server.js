@@ -1,11 +1,13 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const morgan = require('morgan');
 const fs = require('fs');
 const path = require('path');
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -46,28 +48,49 @@ const limiter = rateLimit({
 });
 
 app.use('/api/', limiter);
+
+// Auth middleware for admin routes
+function authMiddleware(req, res, next) {
+  const password = req.headers['x-password'] || req.query.password;
+  if (!password || password !== process.env.ADMIN_PASSWORD || 'SecureAdmin2024!') {
+    return res.status(401).json({ success: false, message: 'Accès non autorisé. Mot de passe requis.' });
+  }
+  next();
+}
+
 app.use(express.static('public'));
 
 // ===== DATABASE SETUP =====
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error('Erreur connexion DB:', err.message);
-    process.exit(1);
-  }
-  console.log('✓ Connecté à la base SQLite');
-  initializeDatabase();
-});
+let db;
+if (process.env.DATABASE_URL) {
+  // PostgreSQL
+  db = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  });
+  console.log('✓ Connecté à PostgreSQL');
+} else {
+  // SQLite (local)
+  db = new sqlite3.Database(DB_PATH, (err) => {
+    if (err) {
+      console.error('Erreur connexion DB:', err.message);
+      process.exit(1);
+    }
+    console.log('✓ Connecté à la base SQLite');
+  });
+}
 
 function initializeDatabase() {
-  db.serialize(() => {
-    db.run(`
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL
+    db.query(`
       CREATE TABLE IF NOT EXISTS submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         nom TEXT NOT NULL,
         prenoms TEXT NOT NULL,
         sexe TEXT NOT NULL,
         telephone TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         ip_address TEXT,
         user_agent TEXT
       )
@@ -75,10 +98,55 @@ function initializeDatabase() {
       if (err) {
         console.error('Erreur création table:', err.message);
       } else {
-        console.log('✓ Table submissions prête');
+        console.log('✓ Table submissions prête (PostgreSQL)');
       }
     });
-  });
+  } else {
+    // SQLite
+    db.serialize(() => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS submissions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nom TEXT NOT NULL,
+          prenoms TEXT NOT NULL,
+          sexe TEXT NOT NULL,
+          telephone TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          ip_address TEXT,
+          user_agent TEXT
+        )
+      `, (err) => {
+        if (err) {
+          console.error('Erreur création table:', err.message);
+        } else {
+          console.log('✓ Table submissions prête (SQLite)');
+        }
+      });
+    });
+  }
+}
+
+initializeDatabase();
+
+// Helper function for database queries
+function dbQuery(sql, params = [], callback) {
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL
+    db.query(sql, params, callback);
+  } else {
+    // SQLite
+    db.run(sql, params, callback);
+  }
+}
+
+function dbAll(sql, params = [], callback) {
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL
+    db.query(sql, params, callback);
+  } else {
+    // SQLite
+    db.all(sql, params, callback);
+  }
 }
 
 // ===== VALIDATION ROBUSTE =====
@@ -105,6 +173,15 @@ function validateData(payload) {
     return 'Téléphone doit contenir exactement 10 chiffres.';
   }
   
+  // Validation noms : seulement lettres, espaces, tirets
+  const nameRegex = /^[a-zA-ZÀ-ÿ\s\-]+$/;
+  if (!nameRegex.test(nom.trim())) {
+    return 'Nom ne doit contenir que des lettres, espaces ou tirets.';
+  }
+  if (!nameRegex.test(prenoms.trim())) {
+    return 'Prénoms ne doivent contenir que des lettres, espaces ou tirets.';
+  }
+  
   // Longueur limitation
   if (nom.length > 100 || prenoms.length > 100) {
     return 'Nom et prénoms ne doivent pas dépasser 100 caractères.';
@@ -126,38 +203,100 @@ app.post('/api/submit', (req, res) => {
   const userAgent = req.get('User-Agent');
 
   // Insérer en base de données
-  db.run(
-    `INSERT INTO submissions (nom, prenoms, sexe, telephone, ip_address, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [nom, prenoms, sexe, telephone, ipAddress, userAgent],
-    function(err) {
-      if (err) {
-        console.error('[DB ERROR]', err.message);
-        return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  if (process.env.DATABASE_URL) {
+    // PostgreSQL
+    db.query(
+      `INSERT INTO submissions (nom, prenoms, sexe, telephone, ip_address, user_agent)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [nom, prenoms, sexe, telephone, ipAddress, userAgent],
+      (err, result) => {
+        if (err) {
+          console.error('[DB ERROR]', err.message);
+          return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+        }
+
+        const submissionId = result.rows[0].id;
+
+        // Log succès
+        const logEntry = `[SUBMISSION] ID:${submissionId} | ${nom} ${prenoms} | ${telephone} | IP:${ipAddress}`;
+        console.log(logEntry);
+        fs.appendFileSync(LOG_FILE, logEntry + '\n');
+
+        return res.json({ 
+          success: true, 
+          message: 'Formulaire enregistré avec succès.',
+          submissionId: submissionId 
+        });
       }
+    );
+  } else {
+    // SQLite
+    db.run(
+      `INSERT INTO submissions (nom, prenoms, sexe, telephone, ip_address, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [nom, prenoms, sexe, telephone, ipAddress, userAgent],
+      function(err) {
+        if (err) {
+          console.error('[DB ERROR]', err.message);
+          return res.status(500).json({ success: false, message: 'Erreur serveur.' });
+        }
 
-      // Log succès
-      const logEntry = `[SUBMISSION] ID:${this.lastID} | ${nom} ${prenoms} | ${telephone} | IP:${ipAddress}`;
-      console.log(logEntry);
-      fs.appendFileSync(LOG_FILE, logEntry + '\n');
+        // Log succès
+        const logEntry = `[SUBMISSION] ID:${this.lastID} | ${nom} ${prenoms} | ${telephone} | IP:${ipAddress}`;
+        console.log(logEntry);
+        fs.appendFileSync(LOG_FILE, logEntry + '\n');
 
-      return res.json({ 
-        success: true, 
-        message: 'Formulaire enregistré avec succès.',
-        submissionId: this.lastID 
-      });
-    }
-  );
+        return res.json({ 
+          success: true, 
+          message: 'Formulaire enregistré avec succès.',
+          submissionId: this.lastID 
+        });
+      }
+    );
+  }
 });
 
-// Route admin pour voir les submissions (à protéger en production!)
-app.get('/api/submissions', limiter, (req, res) => {
-  // TODO: Ajouter authentification/autorisation
-  db.all('SELECT * FROM submissions ORDER BY created_at DESC LIMIT 100', (err, rows) => {
+// Route admin pour voir les submissions (protégée par mot de passe)
+app.get('/api/submissions', authMiddleware, limiter, (req, res) => {
+  dbAll('SELECT * FROM submissions ORDER BY created_at DESC LIMIT 100', [], (err, rows) => {
     if (err) {
       return res.status(500).json({ success: false, message: 'Erreur consultation données.' });
     }
     res.json({ success: true, count: rows.length, data: rows });
+  });
+});
+
+// Route pour exporter les données en CSV (protégée)
+app.get('/api/export/csv', authMiddleware, limiter, (req, res) => {
+  dbAll('SELECT id, nom, prenoms, sexe, telephone, created_at FROM submissions ORDER BY created_at DESC', [], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ success: false, message: 'Erreur export données.' });
+    }
+
+    const csvWriter = createCsvWriter({
+      path: path.join(__dirname, 'export.csv'),
+      header: [
+        { id: 'id', title: 'ID' },
+        { id: 'nom', title: 'Nom' },
+        { id: 'prenoms', title: 'Prénoms' },
+        { id: 'sexe', title: 'Sexe' },
+        { id: 'telephone', title: 'Téléphone' },
+        { id: 'created_at', title: 'Date de création' },
+      ],
+    });
+
+    csvWriter.writeRecords(rows).then(() => {
+      res.download(path.join(__dirname, 'export.csv'), 'submissions.csv', (err) => {
+        if (err) {
+          console.error('Erreur téléchargement CSV:', err);
+        }
+        // Supprimer le fichier après téléchargement
+        fs.unlinkSync(path.join(__dirname, 'export.csv'));
+      });
+    }).catch((error) => {
+      console.error('Erreur écriture CSV:', error);
+      res.status(500).json({ success: false, message: 'Erreur génération CSV.' });
+    });
   });
 });
 
